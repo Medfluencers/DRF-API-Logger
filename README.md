@@ -223,6 +223,12 @@ DRF_API_LOGGER_METHODS = ['GET', 'POST', 'PUT', 'DELETE']
 DRF_API_LOGGER_STATUS_CODES = [200, 201, 400, 401, 403, 404, 500]
 ```
 
+**Log Server Errors:**
+```python
+# Log 5xx responses, including unhandled exceptions
+DRF_API_LOG_SERVER_ERROR = True  # Default: False
+```
+
 > **Note:** Admin panel requests are automatically excluded from logging.
 
 ### Security & Privacy

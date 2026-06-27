@@ -324,6 +324,175 @@ class TestAPILoggerMiddleware(TestCase):
             API_LOGGER_SIGNAL.listen -= listener
 
     @override_settings(
+        DRF_API_LOGGER_DATABASE=False,
+        DRF_API_LOGGER_SIGNAL=True,
+        DRF_API_LOG_SERVER_ERROR=True
+    )
+    @patch('drf_api_logger.middleware.api_logger_middleware.resolve')
+    def test_html_server_error_is_logged_when_enabled(self, mock_resolve):
+        """Test HTML 5xx responses are logged when server error logging is enabled"""
+        mock_resolve.return_value.namespace = None
+        mock_resolve.return_value.url_name = 'test'
+
+        signal_data = []
+        from drf_api_logger import API_LOGGER_SIGNAL
+        def listener(**kwargs):
+            signal_data.append(kwargs)
+
+        def server_error_response(request):
+            return HttpResponse(
+                "<html><body>server error</body></html>",
+                content_type="text/html",
+                status=500
+            )
+
+        API_LOGGER_SIGNAL.listen += listener
+        try:
+            middleware = APILoggerMiddleware(get_response=server_error_response)
+            request = self.factory.get('/api/test/')
+            response = middleware(request)
+            self.assertEqual(response.status_code, 500)
+            self.assertEqual(len(signal_data), 1)
+            self.assertEqual(signal_data[0]['status_code'], 500)
+            self.assertIn('server error', signal_data[0]['response'])
+        finally:
+            API_LOGGER_SIGNAL.listen -= listener
+
+    @override_settings(
+        DRF_API_LOGGER_DATABASE=False,
+        DRF_API_LOGGER_SIGNAL=True,
+        DRF_API_LOG_SERVER_ERROR=False
+    )
+    @patch('drf_api_logger.middleware.api_logger_middleware.resolve')
+    def test_html_server_error_is_not_logged_by_default(self, mock_resolve):
+        """Test HTML 5xx responses are skipped unless server error logging is enabled"""
+        mock_resolve.return_value.namespace = None
+        mock_resolve.return_value.url_name = 'test'
+
+        signal_data = []
+        from drf_api_logger import API_LOGGER_SIGNAL
+        def listener(**kwargs):
+            signal_data.append(kwargs)
+
+        def server_error_response(request):
+            return HttpResponse(
+                "<html><body>server error</body></html>",
+                content_type="text/html",
+                status=500
+            )
+
+        API_LOGGER_SIGNAL.listen += listener
+        try:
+            middleware = APILoggerMiddleware(get_response=server_error_response)
+            request = self.factory.get('/api/test/')
+            response = middleware(request)
+            self.assertEqual(response.status_code, 500)
+            self.assertEqual(signal_data, [])
+        finally:
+            API_LOGGER_SIGNAL.listen -= listener
+
+    @override_settings(
+        DRF_API_LOGGER_DATABASE=False,
+        DRF_API_LOGGER_SIGNAL=True,
+        DRF_API_LOG_SERVER_ERROR=True
+    )
+    @patch('drf_api_logger.middleware.api_logger_middleware.resolve')
+    def test_json_server_error_is_logged_when_enabled(self, mock_resolve):
+        """Test non-HTML 5xx responses are logged when server error logging is enabled"""
+        mock_resolve.return_value.namespace = None
+        mock_resolve.return_value.url_name = 'test'
+
+        signal_data = []
+        from drf_api_logger import API_LOGGER_SIGNAL
+        def listener(**kwargs):
+            signal_data.append(kwargs)
+
+        def server_error_response(request):
+            return HttpResponse(
+                json.dumps({"detail": "error"}),
+                content_type="application/json",
+                status=503
+            )
+
+        API_LOGGER_SIGNAL.listen += listener
+        try:
+            middleware = APILoggerMiddleware(get_response=server_error_response)
+            request = self.factory.get('/api/test/')
+            response = middleware(request)
+            self.assertEqual(response.status_code, 503)
+            self.assertEqual(len(signal_data), 1)
+            self.assertEqual(signal_data[0]['status_code'], 503)
+            self.assertEqual(signal_data[0]['response']['detail'], 'error')
+        finally:
+            API_LOGGER_SIGNAL.listen -= listener
+
+    @override_settings(
+        DRF_API_LOGGER_DATABASE=False,
+        DRF_API_LOGGER_SIGNAL=True,
+        DRF_API_LOG_SERVER_ERROR=True,
+        DRF_API_LOGGER_STATUS_CODES=[200]
+    )
+    @patch('drf_api_logger.middleware.api_logger_middleware.resolve')
+    def test_html_server_error_respects_status_code_filter(self, mock_resolve):
+        """Test HTML 5xx logging still respects configured status code filters"""
+        mock_resolve.return_value.namespace = None
+        mock_resolve.return_value.url_name = 'test'
+
+        signal_data = []
+        from drf_api_logger import API_LOGGER_SIGNAL
+        def listener(**kwargs):
+            signal_data.append(kwargs)
+
+        def server_error_response(request):
+            return HttpResponse(
+                "<html><body>server error</body></html>",
+                content_type="text/html",
+                status=500
+            )
+
+        API_LOGGER_SIGNAL.listen += listener
+        try:
+            middleware = APILoggerMiddleware(get_response=server_error_response)
+            request = self.factory.get('/api/test/')
+            response = middleware(request)
+            self.assertEqual(response.status_code, 500)
+            self.assertEqual(signal_data, [])
+        finally:
+            API_LOGGER_SIGNAL.listen -= listener
+
+    @override_settings(
+        DRF_API_LOGGER_DATABASE=False,
+        DRF_API_LOGGER_SIGNAL=True,
+        DRF_API_LOG_SERVER_ERROR=True
+    )
+    @patch('drf_api_logger.middleware.api_logger_middleware.resolve')
+    def test_unhandled_exception_is_logged_when_enabled(self, mock_resolve):
+        """Test unhandled exceptions are recorded as 500 server errors when enabled"""
+        mock_resolve.return_value.namespace = None
+        mock_resolve.return_value.url_name = 'test'
+
+        signal_data = []
+        from drf_api_logger import API_LOGGER_SIGNAL
+        def listener(**kwargs):
+            signal_data.append(kwargs)
+
+        def failing_response(request):
+            raise RuntimeError("boom")
+
+        API_LOGGER_SIGNAL.listen += listener
+        try:
+            middleware = APILoggerMiddleware(get_response=failing_response)
+            request = self.factory.get('/api/test/')
+            with self.assertRaises(RuntimeError):
+                middleware(request)
+            self.assertEqual(len(signal_data), 1)
+            self.assertEqual(signal_data[0]['status_code'], 500)
+            self.assertIn('RuntimeError', signal_data[0]['response'])
+            self.assertIn('boom', signal_data[0]['response'])
+        finally:
+            API_LOGGER_SIGNAL.listen -= listener
+
+    @override_settings(
         DRF_API_LOGGER_SIGNAL=True,
         DRF_API_LOGGER_ENABLE_PROFILING=True,
         DRF_API_LOGGER_PROFILING_SAMPLE_RATE=0

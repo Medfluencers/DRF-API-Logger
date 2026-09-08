@@ -1,6 +1,6 @@
 # DRF API Logger
 
-[![Version](https://img.shields.io/badge/version-1.2.2-blue.svg)](https://github.com/vishalanandl177/DRF-API-Logger)
+[![Version](https://img.shields.io/badge/version-1.2.3-blue.svg)](https://github.com/vishalanandl177/DRF-API-Logger)
 [![Python](https://img.shields.io/badge/python-3.6+-blue.svg)](https://www.python.org)
 [![Django](https://img.shields.io/badge/django-3.2+-green.svg)](https://djangoproject.com)
 [![DRF](https://img.shields.io/badge/djangorestframework-3.12+-orange.svg)](https://www.django-rest-framework.org)
@@ -225,9 +225,22 @@ DRF_API_LOGGER_STATUS_CODES = [200, 201, 400, 401, 403, 404, 500]
 
 **Log Server Errors:**
 ```python
-# Log 5xx responses, including unhandled exceptions
-DRF_API_LOG_SERVER_ERROR = True  # Default: False
+# Log every 5xx response regardless of content type, so Django's HTML 500
+# page is not skipped. When a view raised, the log body is
+# {"error": repr(exc), "traceback": "..."} captured via process_exception.
+DRF_API_LOGGER_LOG_SERVER_ERRORS = True  # Default: True
 ```
+
+> Tracebacks are truncated from the head to `DRF_API_LOGGER_MAX_RESPONSE_BODY_SIZE`
+> so the raising frame survives, and URL query parameters in the text are masked
+> with the same rules as request bodies. Local variables are never included.
+> Exceptions raised by middleware *outside* this one still produce a 500 row, but
+> without a traceback, and so does a view exception that another middleware's
+> `process_exception` answers first: Django calls those hooks innermost-first and
+> stops at the first response, so keep `APILoggerMiddleware` last in `MIDDLEWARE`.
+> Masking covers query parameters only; an exception message that echoes a request
+> body (e.g. a database error quoting a row) is stored as-is. `DRF_API_LOG_SERVER_ERROR` is the deprecated name of this
+> setting and is still honoured.
 
 > **Note:** Admin panel requests are automatically excluded from logging.
 

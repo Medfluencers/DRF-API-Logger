@@ -26,10 +26,17 @@ def slow_api_view(request):
     return JsonResponse({'message': 'slow response'})
 
 
+@api_view(['GET'])
+def failing_api_view(request):
+    """API view that raises, for testing 5xx traceback logging"""
+    raise RuntimeError("boom")
+
+
 urlpatterns = [
     path('admin/', admin.site.urls),
     path('api/test/', test_api_view, name='test_api'),
     path('api/slow/', slow_api_view, name='slow_api'),
+    path('api/fail/', failing_api_view, name='fail_api'),
     path('api/users/', test_api_view, name='user_list'),
     path('api/v1/test/', test_api_view, name='v1_test'),
 ]

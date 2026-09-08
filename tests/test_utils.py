@@ -11,7 +11,8 @@ from drf_api_logger.utils import (
     is_api_logger_enabled,
     database_log_enabled,
     mask_sensitive_data,
-    SENSITIVE_KEYS
+    SENSITIVE_KEYS,
+    mask_sensitive_text,
 )
 
 
@@ -207,6 +208,22 @@ class TestUtilityFunctions(TestCase):
         self.assertIn('access=***FILTERED***', masked)
         self.assertIn('refresh=***FILTERED***', masked)
         self.assertIn('data=xyz', masked)
+
+    def test_mask_sensitive_text_masks_params_inside_prose_and_across_lines(self):
+        """Test text masking stops at whitespace so a URL in a sentence does not swallow the rest"""
+        text = ('GET https://x.test/cb?token=abc123&x=1 failed\n'
+                'RuntimeError: GET https://x.test/cb?token=abc123&x=1 failed')
+
+        masked = mask_sensitive_text(text)
+
+        self.assertNotIn('abc123', masked)
+        self.assertEqual(masked.count('token=***FILTERED***'), 2)
+        self.assertEqual(masked.count('x=1 failed'), 2)
+
+    def test_mask_sensitive_text_leaves_non_strings_alone(self):
+        """Test text masking returns non-string input unchanged"""
+        self.assertEqual(mask_sensitive_text(None), None)
+        self.assertEqual(mask_sensitive_text(42), 42)
 
     def test_mask_sensitive_data_non_dict(self):
         """Test mask_sensitive_data with non-dict input"""

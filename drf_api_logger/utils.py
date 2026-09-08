@@ -135,6 +135,26 @@ def profiling_enabled():
     return drf_api_logger_profiling
 
 
+def mask_sensitive_text(text):
+    """
+    Masks sensitive query-parameter values inside free text such as a traceback.
+
+    Unlike the URL branch of ``mask_sensitive_data``, a value stops at
+    whitespace, so a URL embedded in a sentence or a multi-line message does not
+    swallow the rest of the text.
+    """
+    if type(text) is not str:
+        return text
+
+    def replace_param(match):
+        separator, key, value = match.groups()
+        if _is_sensitive_key(key):
+            return '{}{}={}'.format(separator, key, FILTERED_VALUE)
+        return match.group(0)
+
+    return re.sub(r'(^|[?&])([^=?&#\s]+)=([^&#\s]*)', replace_param, text, flags=re.MULTILINE)
+
+
 def mask_sensitive_data(data, mask_api_parameters=False):
     """
     Masks or removes sensitive data such as passwords or tokens from dictionaries or URL strings.

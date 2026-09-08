@@ -13,7 +13,7 @@ from datetime import datetime
 
 from drf_api_logger import apps as logger_apps
 from drf_api_logger import API_LOGGER_SIGNAL
-from drf_api_logger.utils import get_headers, get_client_ip, mask_sensitive_data
+from drf_api_logger.utils import get_headers, get_client_ip, mask_sensitive_data, mask_sensitive_text
 
 
 DEFAULT_MAX_REQUEST_BODY_SIZE = 32768
@@ -62,9 +62,13 @@ class APILoggerMiddleware:
                     settings.DRF_API_LOGGER_STATUS_CODES) is list:
                 self.DRF_API_LOGGER_STATUS_CODES = settings.DRF_API_LOGGER_STATUS_CODES
 
-        self.DRF_API_LOG_SERVER_ERROR = False
-        if hasattr(settings, 'DRF_API_LOG_SERVER_ERROR'):
-            self.DRF_API_LOG_SERVER_ERROR = settings.DRF_API_LOG_SERVER_ERROR
+        # 5xx responses are logged by default, whatever their content type.
+        # DRF_API_LOG_SERVER_ERROR is the deprecated name of the same switch.
+        self.DRF_API_LOGGER_LOG_SERVER_ERRORS = True
+        if hasattr(settings, 'DRF_API_LOGGER_LOG_SERVER_ERRORS'):
+            self.DRF_API_LOGGER_LOG_SERVER_ERRORS = bool(settings.DRF_API_LOGGER_LOG_SERVER_ERRORS)
+        elif hasattr(settings, 'DRF_API_LOG_SERVER_ERROR'):
+            self.DRF_API_LOGGER_LOG_SERVER_ERRORS = bool(settings.DRF_API_LOG_SERVER_ERROR)
 
         self.DRF_API_LOGGER_ENABLE_TRACING = False
         self.DRF_API_LOGGER_TRACING_ID_HEADER_NAME = None
@@ -150,10 +154,53 @@ class APILoggerMiddleware:
     def _should_log_server_error(self, response):
         status_code = getattr(response, 'status_code', None)
         return (
-            self.DRF_API_LOG_SERVER_ERROR
+            self.DRF_API_LOGGER_LOG_SERVER_ERRORS
             and status_code is not None
             and 500 <= status_code < 600
         )
+
+    def process_exception(self, request, exception):
+        """
+        Remember the exception a view raised so the 5xx log row can carry its
+        traceback.
+
+        Django converts the exception into a 500 response before it reaches
+        `__call__`, so this hook is the only place the middleware sees it.
+        Returning None leaves Django's own error handling untouched.
+        """
+        request._drf_api_logger_exception = exception
+        return None
+
+    def _format_exception_body(self, exc):
+        """
+        Build the log body for an unhandled exception: its repr plus the
+        formatted traceback, truncated from the head so the raising frame and
+        message survive, and passed through the query-parameter masker so a
+        URL with `token=` in the message is filtered. Local variables are
+        never part of `format_exception`.
+        """
+        text = ''.join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+        try:
+            error = repr(exc)
+        except Exception:
+            error = type(exc).__name__
+        return {
+            'error': mask_sensitive_text(self._keep_tail(error, 'Error')),
+            'traceback': mask_sensitive_text(self._keep_tail(text, 'Traceback')),
+        }
+
+    def _keep_tail(self, text, label):
+        """
+        Truncate `text` to the response body limit by dropping its head, so the
+        end of a traceback or message survives. -1 disables the limit.
+        """
+        limit = self.DRF_API_LOGGER_MAX_RESPONSE_BODY_SIZE
+        encoded = text.encode('utf-8')
+        if limit < 0 or len(encoded) <= limit:
+            return text
+        marker = self._truncation_marker(label, len(encoded), limit)
+        tail = encoded[len(encoded) - limit:].decode('utf-8', errors='ignore')
+        return marker + '\n' + tail
 
     def _is_json_content_type(self, content_type):
         return content_type == 'application/json' or content_type.endswith('+json')
@@ -381,15 +428,18 @@ class APILoggerMiddleware:
                 reset_queries()
 
             view_start = time.time()
-            response = None
             request_exception = None
             response_body = None
             try:
                 response = self.get_response(request)
             except Exception as exc:
+                # Only reachable when this middleware is called outside
+                # Django's handler chain, which converts exceptions to a 500
+                # response before they get here. Kept as a fallback.
                 request_exception = exc
                 response = HttpResponse(status=500, content_type='text/html')
-                response_body = traceback.format_exc()
+                if self._should_log_server_error(response):
+                    response_body = self._format_exception_body(exc)
             finally:
                 view_end = time.time()
                 if sql_profiling_active:
@@ -405,25 +455,16 @@ class APILoggerMiddleware:
                         connection.force_debug_cursor = original_force_debug_cursor
                         reset_queries()
 
-            if request_exception is not None:
-                data = self._build_log_data(
-                    request=request,
-                    headers=headers,
-                    method=method,
-                    request_data=request_data,
-                    response=response,
-                    start_time=start_time,
-                    middleware_before_start=middleware_before_start,
-                    middleware_before_end=middleware_before_end,
-                    view_start=view_start,
-                    view_end=view_end,
-                    profile_this_request=profile_this_request,
-                    sql_data=sql_data,
-                    response_body=response_body,
-                )
-                if data is not None:
-                    self._dispatch_log_data(data, request_data, tracing_id)
-                raise request_exception.with_traceback(request_exception.__traceback__)
+            if request_exception is None:
+                # The view's exception, stashed by process_exception before
+                # Django turned it into this 500 response.
+                view_exception = getattr(request, '_drf_api_logger_exception', None)
+                if view_exception is not None:
+                    # Drop the stash so the traceback's frames (and their
+                    # locals) are not kept alive by the request.
+                    del request._drf_api_logger_exception
+                    if self._should_log_server_error(response):
+                        response_body = self._format_exception_body(view_exception)
 
             data = self._build_log_data(
                 request=request,
@@ -438,11 +479,12 @@ class APILoggerMiddleware:
                 view_end=view_end,
                 profile_this_request=profile_this_request,
                 sql_data=sql_data,
+                response_body=response_body,
             )
             if data is not None:
                 self._dispatch_log_data(data, request_data, tracing_id)
-            else:
-                return response
+            if request_exception is not None:
+                raise request_exception
         else:
             response = self.get_response(request)
         return response

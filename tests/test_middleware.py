@@ -326,7 +326,7 @@ class TestAPILoggerMiddleware(TestCase):
     @override_settings(
         DRF_API_LOGGER_DATABASE=False,
         DRF_API_LOGGER_SIGNAL=True,
-        DRF_API_LOG_SERVER_ERROR=True
+        DRF_API_LOGGER_LOG_SERVER_ERRORS=True
     )
     @patch('drf_api_logger.middleware.api_logger_middleware.resolve')
     def test_html_server_error_is_logged_when_enabled(self, mock_resolve):
@@ -361,11 +361,11 @@ class TestAPILoggerMiddleware(TestCase):
     @override_settings(
         DRF_API_LOGGER_DATABASE=False,
         DRF_API_LOGGER_SIGNAL=True,
-        DRF_API_LOG_SERVER_ERROR=False
+        DRF_API_LOGGER_LOG_SERVER_ERRORS=False
     )
     @patch('drf_api_logger.middleware.api_logger_middleware.resolve')
-    def test_html_server_error_is_not_logged_by_default(self, mock_resolve):
-        """Test HTML 5xx responses are skipped unless server error logging is enabled"""
+    def test_html_server_error_is_not_logged_when_disabled(self, mock_resolve):
+        """Test HTML 5xx responses are skipped when server error logging is disabled"""
         mock_resolve.return_value.namespace = None
         mock_resolve.return_value.url_name = 'test'
 
@@ -394,7 +394,7 @@ class TestAPILoggerMiddleware(TestCase):
     @override_settings(
         DRF_API_LOGGER_DATABASE=False,
         DRF_API_LOGGER_SIGNAL=True,
-        DRF_API_LOG_SERVER_ERROR=True
+        DRF_API_LOGGER_LOG_SERVER_ERRORS=True
     )
     @patch('drf_api_logger.middleware.api_logger_middleware.resolve')
     def test_json_server_error_is_logged_when_enabled(self, mock_resolve):
@@ -429,7 +429,7 @@ class TestAPILoggerMiddleware(TestCase):
     @override_settings(
         DRF_API_LOGGER_DATABASE=False,
         DRF_API_LOGGER_SIGNAL=True,
-        DRF_API_LOG_SERVER_ERROR=True,
+        DRF_API_LOGGER_LOG_SERVER_ERRORS=True,
         DRF_API_LOGGER_STATUS_CODES=[200]
     )
     @patch('drf_api_logger.middleware.api_logger_middleware.resolve')
@@ -463,7 +463,7 @@ class TestAPILoggerMiddleware(TestCase):
     @override_settings(
         DRF_API_LOGGER_DATABASE=False,
         DRF_API_LOGGER_SIGNAL=True,
-        DRF_API_LOG_SERVER_ERROR=True
+        DRF_API_LOGGER_LOG_SERVER_ERRORS=True
     )
     @patch('drf_api_logger.middleware.api_logger_middleware.resolve')
     def test_unhandled_exception_is_logged_when_enabled(self, mock_resolve):
@@ -487,10 +487,208 @@ class TestAPILoggerMiddleware(TestCase):
                 middleware(request)
             self.assertEqual(len(signal_data), 1)
             self.assertEqual(signal_data[0]['status_code'], 500)
-            self.assertIn('RuntimeError', signal_data[0]['response'])
-            self.assertIn('boom', signal_data[0]['response'])
+            self.assertIn('RuntimeError', signal_data[0]['response']['error'])
+            self.assertIn('boom', signal_data[0]['response']['traceback'])
         finally:
             API_LOGGER_SIGNAL.listen -= listener
+
+    def test_server_error_logging_enabled_by_default(self):
+        """Test 5xx logging is on unless a setting turns it off"""
+        middleware = APILoggerMiddleware(get_response=self.get_response)
+        self.assertTrue(middleware.DRF_API_LOGGER_LOG_SERVER_ERRORS)
+
+    @override_settings(DRF_API_LOG_SERVER_ERROR=False)
+    def test_legacy_server_error_setting_name_still_works(self):
+        """Test the deprecated DRF_API_LOG_SERVER_ERROR name is still honoured"""
+        middleware = APILoggerMiddleware(get_response=self.get_response)
+        self.assertFalse(middleware.DRF_API_LOGGER_LOG_SERVER_ERRORS)
+
+    def test_process_exception_stores_exception_on_request(self):
+        """Test process_exception keeps the exception for the 5xx log and defers to Django"""
+        request = self.factory.get('/api/test/')
+        error = RuntimeError("boom")
+        result = self.middleware.process_exception(request, error)
+        self.assertIsNone(result)
+        self.assertIs(request._drf_api_logger_exception, error)
+
+    @override_settings(
+        DRF_API_LOGGER_DATABASE=False,
+        DRF_API_LOGGER_SIGNAL=True,
+        DRF_API_LOGGER_LOG_SERVER_ERRORS=True
+    )
+    @patch('drf_api_logger.middleware.api_logger_middleware.resolve')
+    def test_server_error_with_stored_exception_logs_traceback_when_enabled(self, mock_resolve):
+        """Test a 500 produced from a view exception is logged with the traceback"""
+        mock_resolve.return_value.namespace = None
+        mock_resolve.return_value.url_name = 'test'
+
+        signal_data = []
+        from drf_api_logger import API_LOGGER_SIGNAL
+        def listener(**kwargs):
+            signal_data.append(kwargs)
+
+        def django_converted_response(request):
+            # What Django hands back after convert_exception_to_response
+            return HttpResponse("<h1>Server Error (500)</h1>", content_type="text/html", status=500)
+
+        API_LOGGER_SIGNAL.listen += listener
+        try:
+            middleware = APILoggerMiddleware(get_response=django_converted_response)
+            request = self.factory.get('/api/test/')
+            try:
+                raise RuntimeError("boom")
+            except RuntimeError as exc:
+                middleware.process_exception(request, exc)
+            response = middleware(request)
+            self.assertEqual(response.status_code, 500)
+            self.assertEqual(len(signal_data), 1)
+            body = signal_data[0]['response']
+            self.assertEqual(body['error'], "RuntimeError('boom')")
+            self.assertIn('Traceback (most recent call last)', body['traceback'])
+            self.assertIn('RuntimeError: boom', body['traceback'])
+        finally:
+            API_LOGGER_SIGNAL.listen -= listener
+
+    @override_settings(
+        DRF_API_LOGGER_DATABASE=False,
+        DRF_API_LOGGER_SIGNAL=True,
+        DRF_API_LOGGER_LOG_SERVER_ERRORS=False
+    )
+    @patch('drf_api_logger.middleware.api_logger_middleware.resolve')
+    def test_server_error_with_stored_exception_not_logged_when_disabled(self, mock_resolve):
+        """Test a stored view exception does not force a log when 5xx logging is off"""
+        mock_resolve.return_value.namespace = None
+        mock_resolve.return_value.url_name = 'test'
+
+        signal_data = []
+        from drf_api_logger import API_LOGGER_SIGNAL
+        def listener(**kwargs):
+            signal_data.append(kwargs)
+
+        def django_converted_response(request):
+            return HttpResponse("<h1>Server Error (500)</h1>", content_type="text/html", status=500)
+
+        API_LOGGER_SIGNAL.listen += listener
+        try:
+            middleware = APILoggerMiddleware(get_response=django_converted_response)
+            request = self.factory.get('/api/test/')
+            middleware.process_exception(request, RuntimeError("boom"))
+            response = middleware(request)
+            self.assertEqual(response.status_code, 500)
+            self.assertEqual(signal_data, [])
+        finally:
+            API_LOGGER_SIGNAL.listen -= listener
+
+    @override_settings(
+        DRF_API_LOGGER_DATABASE=False,
+        DRF_API_LOGGER_SIGNAL=True,
+        DRF_API_LOGGER_LOG_SERVER_ERRORS=False
+    )
+    @patch('drf_api_logger.middleware.api_logger_middleware.resolve')
+    def test_unhandled_exception_not_logged_when_disabled(self, mock_resolve):
+        """Test an exception escaping get_response is re-raised but not logged when 5xx logging is off"""
+        mock_resolve.return_value.namespace = None
+        mock_resolve.return_value.url_name = 'test'
+
+        signal_data = []
+        from drf_api_logger import API_LOGGER_SIGNAL
+        def listener(**kwargs):
+            signal_data.append(kwargs)
+
+        def failing_response(request):
+            raise RuntimeError("boom")
+
+        API_LOGGER_SIGNAL.listen += listener
+        try:
+            middleware = APILoggerMiddleware(get_response=failing_response)
+            request = self.factory.get('/api/test/')
+            with self.assertRaises(RuntimeError):
+                middleware(request)
+            self.assertEqual(signal_data, [])
+        finally:
+            API_LOGGER_SIGNAL.listen -= listener
+
+    @override_settings(DRF_API_LOGGER_MAX_RESPONSE_BODY_SIZE=200)
+    def test_traceback_is_truncated_keeping_the_tail(self):
+        """Test an over-limit traceback keeps its final frames and the error line"""
+        middleware = APILoggerMiddleware(get_response=self.get_response)
+
+        def deep(n):
+            if n == 0:
+                raise RuntimeError("boom at the bottom")
+            return deep(n - 1)
+
+        try:
+            deep(25)
+        except RuntimeError as exc:
+            body = middleware._format_exception_body(exc)
+        self.assertTrue(body['traceback'].startswith('** Traceback truncated:'))
+        self.assertTrue(body['traceback'].rstrip().endswith('RuntimeError: boom at the bottom'))
+        self.assertLessEqual(len(body['traceback'].encode('utf-8')), 200 + 100)
+
+    @override_settings(DRF_API_LOGGER_MAX_RESPONSE_BODY_SIZE=50)
+    def test_error_field_is_truncated_like_the_traceback(self):
+        """Test a huge exception message does not bypass the body limit through the error field"""
+        middleware = APILoggerMiddleware(get_response=self.get_response)
+        try:
+            raise RuntimeError("x" * 5000)
+        except RuntimeError as exc:
+            body = middleware._format_exception_body(exc)
+        self.assertTrue(body['error'].startswith('** Error truncated:'))
+        self.assertLessEqual(len(body['error'].encode('utf-8')), 50 + 100)
+
+    @override_settings(DRF_API_LOGGER_MAX_RESPONSE_BODY_SIZE=0)
+    def test_zero_body_limit_keeps_only_the_marker(self):
+        """Test a zero limit stores the truncation marker and nothing else, like _decode_body"""
+        middleware = APILoggerMiddleware(get_response=self.get_response)
+        try:
+            raise RuntimeError("boom")
+        except RuntimeError as exc:
+            body = middleware._format_exception_body(exc)
+        self.assertNotIn('boom', body['traceback'])
+        self.assertTrue(body['traceback'].startswith('** Traceback truncated:'))
+
+    def test_exception_with_failing_repr_is_still_logged(self):
+        """Test an exception whose __repr__ raises falls back to its class name"""
+        middleware = APILoggerMiddleware(get_response=self.get_response)
+
+        class Broken(Exception):
+            def __repr__(self):
+                raise ValueError("no repr")
+
+        try:
+            raise Broken("boom")
+        except Broken as exc:
+            body = middleware._format_exception_body(exc)
+        self.assertEqual(body['error'], 'Broken')
+        self.assertIn('Broken', body['traceback'])
+
+    def test_stored_exception_is_released_after_logging(self):
+        """Test the request no longer references the exception once the 500 row is built"""
+        request = self.factory.get('/api/test/')
+
+        def django_converted_response(request):
+            return HttpResponse("<h1>Server Error (500)</h1>", content_type="text/html", status=500)
+
+        with patch('drf_api_logger.middleware.api_logger_middleware.resolve') as mock_resolve, \
+                override_settings(DRF_API_LOGGER_SIGNAL=True, DRF_API_LOGGER_DATABASE=False):
+            mock_resolve.return_value.namespace = None
+            mock_resolve.return_value.url_name = 'test'
+            middleware = APILoggerMiddleware(get_response=django_converted_response)
+            middleware.process_exception(request, RuntimeError("boom"))
+            middleware(request)
+        self.assertFalse(hasattr(request, '_drf_api_logger_exception'))
+
+    def test_traceback_masks_sensitive_query_parameters(self):
+        """Test a URL with a token in the exception message is masked in the log"""
+        middleware = APILoggerMiddleware(get_response=self.get_response)
+        try:
+            raise RuntimeError("GET https://example.com/cb?token=abc123&x=1 failed")
+        except RuntimeError as exc:
+            body = middleware._format_exception_body(exc)
+        self.assertNotIn('abc123', body['traceback'])
+        self.assertNotIn('abc123', body['error'])
+        self.assertIn('x=1', body['traceback'])
 
     @override_settings(
         DRF_API_LOGGER_SIGNAL=True,

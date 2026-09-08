@@ -1,7 +1,7 @@
 DRF API Logger
 ==============
 
-.. image:: https://img.shields.io/badge/version-1.2.2-blue.svg
+.. image:: https://img.shields.io/badge/version-1.2.3-blue.svg
    :alt: Version
 .. image:: https://static.pepy.tech/personalized-badge/drf-api-logger?period=total&units=none&left_color=black&right_color=orange&left_text=Downloads%20Total
    :target: http://pepy.tech/project/drf-api-logger
@@ -281,6 +281,10 @@ Configuration Reference
      - list
      - ``[]``
      - Log only these status codes (empty = all)
+   * - ``DRF_API_LOGGER_LOG_SERVER_ERRORS``
+     - bool
+     - ``True``
+     - Log every 5xx regardless of content type; view exceptions carry a traceback (``DRF_API_LOG_SERVER_ERROR`` is the deprecated alias)
    * - ``DRF_API_LOGGER_CONTENT_TYPES``
      - list
      - JSON, gzip, binary, calendar

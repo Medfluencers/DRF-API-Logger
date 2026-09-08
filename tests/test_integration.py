@@ -349,3 +349,48 @@ class TestCompleteWorkflow(TestCase):
             
         finally:
             API_LOGGER_SIGNAL.listen -= self.signal_listener
+
+
+class TestServerErrorIntegration(TestCase):
+    """The real Django handler chain converts a view exception to a 500 before
+    the middleware sees it; only process_exception can recover the traceback."""
+
+    @override_settings(DRF_API_LOGGER_SIGNAL=True, DRF_API_LOGGER_LOG_SERVER_ERRORS=True)
+    def test_unhandled_view_exception_is_logged_with_traceback_end_to_end(self):
+        """Test a raising view produces one 500 log entry carrying its traceback"""
+        signal_data = []
+
+        def listener(**kwargs):
+            signal_data.append(kwargs)
+
+        API_LOGGER_SIGNAL.listen += listener
+        try:
+            client = Client(raise_request_exception=False)
+            with self.assertLogs('django.request', level='ERROR'):
+                response = client.get('/api/fail/')
+            self.assertEqual(response.status_code, 500)
+            self.assertEqual(len(signal_data), 1)
+            self.assertEqual(signal_data[0]['status_code'], 500)
+            body = signal_data[0]['response']
+            self.assertEqual(body['error'], "RuntimeError('boom')")
+            self.assertIn('failing_api_view', body['traceback'])
+        finally:
+            API_LOGGER_SIGNAL.listen -= listener
+
+    @override_settings(DRF_API_LOGGER_SIGNAL=True, DRF_API_LOGGER_LOG_SERVER_ERRORS=False)
+    def test_unhandled_view_exception_is_not_logged_when_disabled_end_to_end(self):
+        """Test the HTML 500 from a raising view is skipped when 5xx logging is off"""
+        signal_data = []
+
+        def listener(**kwargs):
+            signal_data.append(kwargs)
+
+        API_LOGGER_SIGNAL.listen += listener
+        try:
+            client = Client(raise_request_exception=False)
+            with self.assertLogs('django.request', level='ERROR'):
+                response = client.get('/api/fail/')
+            self.assertEqual(response.status_code, 500)
+            self.assertEqual(signal_data, [])
+        finally:
+            API_LOGGER_SIGNAL.listen -= listener
